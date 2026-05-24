@@ -12,12 +12,28 @@ from database import (
 )
 from export_utils import markdown_filename, to_markdown
 from load_env import load_env_file
+from reference_ui import render_reference_summary
 from style_prompts import STYLE_OPTIONS
 from utils import generate_xiaohongshu, refine_xiaohongshu
+from xhs_reference import fetch_note_references, get_xhs_cookies
 
 load_env_file()
 
-st.set_page_config(page_title="爆款小红书AI写作助手", layout="wide")
+st.set_page_config(
+    page_title="爆款小红书AI写作助手",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+st.markdown(
+    """
+    <style>
+    .block-container { padding-top: 1.5rem; max-width: 1100px; }
+    div[data-testid="stSidebar"] { background-color: #f8f8f8; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 api_key = os.environ.get("DEEPSEEK_API_KEY", "")
 
@@ -27,22 +43,24 @@ if "xhs_round" not in st.session_state:
     st.session_state.xhs_round = 0
 if "xhs_history_id" not in st.session_state:
     st.session_state.xhs_history_id = None
+if "xhs_references" not in st.session_state:
+    st.session_state.xhs_references = None
+if "xhs_ref_message" not in st.session_state:
+    st.session_state.xhs_ref_message = ""
+if "use_xhs_ref" not in st.session_state:
+    st.session_state.use_xhs_ref = True
 
 
 def _check_api_key() -> bool:
     if api_key:
         return True
-    st.error(
-        "未检测到 DeepSeek API Key。请在项目根目录创建 `.env` 文件，"
-        "参考 `.env.example` 填写 `DEEPSEEK_API_KEY`。"
-    )
+    st.error("请在 `.env` 中配置 `DEEPSEEK_API_KEY`")
     return False
 
 
 def _load_history_record(record_id: int) -> None:
     record = get_record(record_id)
     if record is None:
-        st.sidebar.warning("记录不存在或已删除")
         return
     st.session_state.xhs_result = record_to_xiaohongshu(record)
     st.session_state.xhs_theme = record["theme"]
@@ -53,110 +71,127 @@ def _load_history_record(record_id: int) -> None:
 
 
 def _persist_result(result, round_num: int) -> None:
-    """首次生成 INSERT；同一会话的优化 UPDATE 同一条记录。"""
-    theme = st.session_state.get("xhs_theme", "")
-    style = st.session_state.get("xhs_style", "干货")
-    notes = st.session_state.get("xhs_user_notes", "")
-
     if st.session_state.xhs_history_id is None:
-        record_id = save_record(theme, style, notes, result, round_num)
-        st.session_state.xhs_history_id = record_id
+        st.session_state.xhs_history_id = save_record(
+            st.session_state.get("xhs_theme", ""),
+            st.session_state.get("xhs_style", "干货"),
+            st.session_state.get("xhs_user_notes", ""),
+            result,
+            round_num,
+        )
     else:
         update_record(st.session_state.xhs_history_id, result, round_num)
 
 
-# ---------- 侧边栏：历史记录 ----------
+def _clear_session() -> None:
+    st.session_state.xhs_result = None
+    st.session_state.xhs_round = 0
+    st.session_state.xhs_history_id = None
+    st.session_state.xhs_theme = ""
+    st.session_state.xhs_style = STYLE_OPTIONS[0]
+    st.session_state.xhs_user_notes = ""
+    st.session_state.xhs_references = None
+    st.session_state.xhs_ref_message = ""
+
+
+def _fetch_references(theme: str) -> None:
+    if not theme.strip():
+        st.info("请先填写写作主题")
+        return
+    if not get_xhs_cookies():
+        st.error("请配置 `XHS_COOKIES`")
+        return
+    with st.spinner("搜索中…"):
+        ok, message, refs = fetch_note_references(
+            theme.strip(),
+            api_key=api_key or None,
+        )
+    st.session_state.xhs_ref_message = message if ok else ""
+    st.session_state.xhs_references = refs if ok else None
+    if not ok:
+        st.error(message)
+
+
 with st.sidebar:
-    st.subheader("📚 历史记录")
-    st.caption("自动保存每次「开始写作」；优化会更新同一条，不刷屏")
+    st.markdown("### 历史")
+    for rec in list_records():
+        if st.button(
+            f"{rec['theme'][:16]} · {rec['style']}",
+            key=f"load_{rec['id']}",
+            use_container_width=True,
+        ):
+            _load_history_record(rec["id"])
+            st.rerun()
 
-    records = list_records()
-    if not records:
-        st.write("暂无历史，生成一篇后会出现在这里。")
-    else:
-        for rec in records:
-            label = (
-                f"**{rec['theme'][:18]}**"
-                f"{'…' if len(rec['theme']) > 18 else ''}\n\n"
-                f"{rec['style']} · 第{rec['round_num']}轮 · {rec['updated_at']}"
-            )
-            col_load, col_del = st.columns([3, 1])
-            with col_load:
-                if st.button(label, key=f"load_{rec['id']}", use_container_width=True):
-                    _load_history_record(rec["id"])
-                    st.rerun()
-            with col_del:
-                if st.button("删", key=f"del_{rec['id']}"):
-                    delete_record(rec["id"])
-                    if st.session_state.xhs_history_id == rec["id"]:
-                        st.session_state.xhs_history_id = None
-                    st.rerun()
+st.title("爆款小红书 AI 写作")
 
-# ---------- 主界面 ----------
-st.header("爆款小红书AI写作助手 ✏️")
-st.caption("风格选择 · 灵感碎片 · 多轮优化 · 历史记录 · Markdown 导出")
+row1_a, row1_b = st.columns([3, 2])
 
-col_input, col_hint = st.columns([2, 1])
-
-with col_input:
-    default_style = st.session_state.get("xhs_style", STYLE_OPTIONS[0])
-    style_index = STYLE_OPTIONS.index(default_style) if default_style in STYLE_OPTIONS else 0
+with row1_a:
     style = st.selectbox(
-        "写作风格",
+        "风格",
         STYLE_OPTIONS,
-        index=style_index,
-        help="干货偏攻略收藏，幽默偏口语梗，种草偏体验安利",
+        index=STYLE_OPTIONS.index(st.session_state.get("xhs_style", STYLE_OPTIONS[0]))
+        if st.session_state.get("xhs_style") in STYLE_OPTIONS
+        else 0,
     )
     theme = st.text_input(
-        "写作主题",
+        "主题",
         value=st.session_state.get("xhs_theme", ""),
-        placeholder="例如：杭州西湖一日游",
+        placeholder="优绩主义",
     )
     user_notes = st.text_area(
-        "你的灵感 / 独门体验（选填）",
+        "灵感（选填）",
         value=st.session_state.get("xhs_user_notes", ""),
-        placeholder=(
-            "写下你想分享的真实片段，不必有条理，例如：\n"
-            "初夏晚上10点，和朋友从曲院风荷骑车绕湖，风很凉，特别治愈……"
-        ),
-        height=120,
-        help="AI 会理解你的意图，自然写进正文，而不是生硬粘贴",
+        height=88,
     )
 
-with col_hint:
-    st.info(
-        "**怎么用更好？**\n\n"
-        "1. 主题定方向（去哪、写什么）\n"
-        "2. 灵感框写只有你知道的细节\n"
-        "3. 生成后可优化、导出、在左侧加载历史"
-    )
-
-btn_col1, btn_col2, _ = st.columns([1, 1, 3])
-with btn_col1:
-    submit = st.button("开始写作", type="primary", use_container_width=True)
-with btn_col2:
-    if st.button("清空重新开始", use_container_width=True):
-        st.session_state.xhs_result = None
-        st.session_state.xhs_round = 0
-        st.session_state.xhs_history_id = None
-        st.session_state.xhs_theme = ""
-        st.session_state.xhs_style = STYLE_OPTIONS[0]
-        st.session_state.xhs_user_notes = ""
+with row1_b:
+    st.markdown("**参考热门笔记** · 最多 3 条")
+    use_xhs_ref = st.checkbox("写作时参考高赞笔记", value=st.session_state.use_xhs_ref)
+    st.session_state.use_xhs_ref = use_xhs_ref
+    if st.button("预览参考", use_container_width=True):
+        _fetch_references(theme)
         st.rerun()
 
+if st.session_state.xhs_references:
+    render_reference_summary(st.session_state.xhs_references)
+
+st.divider()
+
+c1, c2, c3 = st.columns([1, 1, 2])
+with c1:
+    submit = st.button("开始写作", type="primary", use_container_width=True)
+with c2:
+    if st.button("清空", use_container_width=True):
+        _clear_session()
+        st.rerun()
 
 if submit:
     if not _check_api_key():
         st.stop()
     if not theme.strip():
-        st.info("请输入写作主题")
+        st.info("请填写主题")
         st.stop()
-    with st.spinner("AI 正在创作中，请稍等..."):
+
+    refs = None
+    if use_xhs_ref and get_xhs_cookies():
+        if not st.session_state.xhs_references:
+            with st.spinner("获取参考笔记…"):
+                ok, _, refs = fetch_note_references(
+                    theme.strip(), api_key=api_key or None
+                )
+                if ok:
+                    st.session_state.xhs_references = refs
+        refs = st.session_state.xhs_references
+
+    with st.spinner("生成中…"):
         result = generate_xiaohongshu(
             theme.strip(),
             api_key,
             style=style,
             user_notes=user_notes,
+            references=refs,
         )
         st.session_state.xhs_result = result
         st.session_state.xhs_theme = theme.strip()
@@ -164,76 +199,48 @@ if submit:
         st.session_state.xhs_user_notes = user_notes
         st.session_state.xhs_round = 1
         st.session_state.xhs_history_id = None
-        _persist_result(result, round_num=1)
+        _persist_result(result, 1)
     st.rerun()
 
 
-def _render_result(result):
-    st.divider()
-    if st.session_state.xhs_round > 1:
-        st.success(f"已完成第 {st.session_state.xhs_round} 轮优化")
-
-    export_col, _ = st.columns([1, 3])
-    with export_col:
-        md_text = to_markdown(
-            st.session_state.get("xhs_theme", theme),
-            st.session_state.get("xhs_style", style),
-            result,
-            user_notes=st.session_state.get("xhs_user_notes", user_notes),
-            round_num=st.session_state.get("xhs_round", 1),
-        )
-        st.download_button(
-            label="⬇️ 下载 Markdown",
-            data=md_text,
-            file_name=markdown_filename(st.session_state.get("xhs_theme", "draft")),
-            mime="text/markdown",
-            use_container_width=True,
-        )
-
-    left_column, right_column = st.columns(2)
-    with left_column:
-        st.markdown("##### 🔥 爆款标题推荐")
-        for i, title in enumerate(result.titles, 1):
-            st.write(f"{i}. {title}")
-    with right_column:
-        st.markdown("##### 📝 正文内容")
-        st.write(result.content)
-
-    with st.expander("预览 Markdown 导出内容"):
-        st.markdown(md_text)
-
-
 if st.session_state.xhs_result:
-    _render_result(st.session_state.xhs_result)
+    r = st.session_state.xhs_result
+    st.markdown("### 生成结果")
+    st.download_button(
+        "下载 Markdown",
+        data=to_markdown(
+            st.session_state.get("xhs_theme", ""),
+            st.session_state.get("xhs_style", ""),
+            r,
+            st.session_state.get("xhs_user_notes", ""),
+            st.session_state.get("xhs_round", 1),
+        ),
+        file_name=markdown_filename(st.session_state.get("xhs_theme", "draft")),
+        mime="text/markdown",
+    )
+    left, right = st.columns(2)
+    with left:
+        st.markdown("**标题**")
+        for i, t in enumerate(r.titles, 1):
+            st.write(f"{i}. {t}")
+    with right:
+        st.markdown("**正文**")
+        st.write(r.content)
 
     st.markdown("---")
-    st.subheader("多轮优化")
-    st.caption("告诉 AI 哪里不满意，它在上一版基础上改；优化结果会同步更新到历史记录")
-
-    feedback = st.text_area(
-        "修改意见",
-        placeholder="例如：标题太正式；正文太长；多写骑车那段；多加 #西湖 #夜游 标签",
-        height=100,
-        key="refine_feedback",
-    )
-    if st.button("根据意见优化", use_container_width=False):
-        if not _check_api_key():
-            st.stop()
-        if not feedback.strip():
-            st.warning("请先填写修改意见")
-        else:
-            with st.spinner("AI 正在优化中..."):
+    feedback = st.text_input("修改意见")
+    if st.button("优化"):
+        if feedback.strip() and _check_api_key():
+            with st.spinner("优化中…"):
                 st.session_state.xhs_result = refine_xiaohongshu(
-                    st.session_state.xhs_result,
+                    r,
                     feedback,
-                    st.session_state.get("xhs_theme", theme),
+                    st.session_state.get("xhs_theme", ""),
                     api_key,
-                    style=st.session_state.get("xhs_style", style),
-                    user_notes=st.session_state.get("xhs_user_notes", user_notes),
+                    style=st.session_state.get("xhs_style", ""),
+                    user_notes=st.session_state.get("xhs_user_notes", ""),
+                    references=st.session_state.xhs_references,
                 )
                 st.session_state.xhs_round += 1
-                _persist_result(
-                    st.session_state.xhs_result,
-                    round_num=st.session_state.xhs_round,
-                )
+                _persist_result(st.session_state.xhs_result, st.session_state.xhs_round)
             st.rerun()

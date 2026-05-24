@@ -1,3 +1,5 @@
+from typing import List, Optional
+
 from langchain.output_parsers import PydanticOutputParser
 from langchain.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
@@ -9,6 +11,7 @@ from prompt_template import (
     user_template_text,
 )
 from style_prompts import get_style_instructions
+from xhs_reference import NoteReference, references_to_prompt
 from xiaohongshu_model import Xiaohongshu
 
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
@@ -45,6 +48,7 @@ def generate_xiaohongshu(
     api_key: str,
     style: str = "干货",
     user_notes: str = "",
+    references: Optional[List[NoteReference]] = None,
 ) -> Xiaohongshu:
     chain, output_parser = _build_chain(
         system_template_text, user_template_text, api_key
@@ -53,6 +57,7 @@ def generate_xiaohongshu(
         "parser_instructions": output_parser.get_format_instructions(),
         "style_instructions": get_style_instructions(style),
         "theme": theme,
+        "research_context": references_to_prompt(references or []),
         "user_notes": _normalize_user_notes(user_notes),
     })
 
@@ -64,6 +69,7 @@ def refine_xiaohongshu(
     api_key: str,
     style: str = "干货",
     user_notes: str = "",
+    references: Optional[List[NoteReference]] = None,
 ) -> Xiaohongshu:
     chain, output_parser = _build_chain(
         refine_system_template_text, refine_user_template_text, api_key
@@ -72,6 +78,7 @@ def refine_xiaohongshu(
         "parser_instructions": output_parser.get_format_instructions(),
         "style_instructions": get_style_instructions(style),
         "theme": theme,
+        "research_context": references_to_prompt(references or []),
         "user_notes": _normalize_user_notes(user_notes),
         "previous_draft": _format_previous_draft(previous),
         "feedback": feedback.strip(),
