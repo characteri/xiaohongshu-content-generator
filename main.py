@@ -1,5 +1,7 @@
 import os
 
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+
 import streamlit as st
 
 from load_env import ensure_npm_deps, load_env_file, load_streamlit_secrets
