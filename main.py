@@ -2,6 +2,12 @@ import os
 
 import streamlit as st
 
+from load_env import ensure_npm_deps, load_env_file, load_streamlit_secrets
+
+load_streamlit_secrets()
+load_env_file()
+ensure_npm_deps()
+
 from database import (
     delete_record,
     get_record,
@@ -11,13 +17,10 @@ from database import (
     update_record,
 )
 from export_utils import markdown_filename, to_markdown
-from load_env import load_env_file
 from reference_ui import render_reference_summary
 from style_prompts import STYLE_OPTIONS
 from utils import generate_xiaohongshu, refine_xiaohongshu
 from xhs_reference import fetch_note_references, get_xhs_cookies
-
-load_env_file()
 
 st.set_page_config(
     page_title="爆款小红书AI写作助手",
